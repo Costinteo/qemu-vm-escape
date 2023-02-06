@@ -1,3 +1,13 @@
+## Sketch of plan (based on the code)
+1. Construct ICMP_ECHO request with command appended
+2. Spray 0x250 times (spraying -> send random packets, with MF bit set, of size 0x2000 + header lens tcp ports 60->80)
+3. Send payload of (0x300 + 4) * 'A' chars to HOST with MF bit set (more fragments) (id=0xdead, protocol=0xff)
+4. Send ((0x500 * 6) + 1072)* 'A' chars to HOST on vulnerable port 113
+5. Create payload of struct mbuf, with m_data pointing to address 0x??????????000b00
+6. Send above payload to HOST on vulnerable port 113
+7. Send packet containing ICMP_ECHO request with MF bit unset (LAST FRAGMENT) -> trigger reassembly
+8. TBD
+
 ## Vulnerability causes and details
 
 This vulnerability exists in QEMU's network module SLiRP. The SLiRP module mainly simulates the network application layer protocol, including IP protocol (v4 and v6), DHCP protocol, ARP protocol, etc. There is an [old version source code] on sourceforge (https://sourceforge.net/projects/slirp /files/#files), the slirp code in the QEMU source code is very similar to the one here, maybe it was developed based on it? It is worth noting that the slirp module has not been modified for a long time, but it is the default network module in QEMU, so its security is worth studying.
@@ -10,22 +20,21 @@ case EMU_IDENT:
 /*
 * Identification protocol as per rfc-1413
 */
-
 {
-struct socket *tmpso;
-struct sockaddr_in addr;
-socklen_t addrlen = sizeof(struct sockaddr_in);
-struct sbuf *so_rcv = &so->so_rcv;
+  struct socket *tmpso;
+  struct sockaddr_in addr;
+  socklen_t addrlen = sizeof(struct sockaddr_in);
+  struct sbuf *so_rcv = &so->so_rcv;
 
-memcpy(so_rcv->sb_wptr, m->m_data, m->m_len); // copy user data to sbuf
-so_rcv->sb_wptr += m->m_len;
-so_rcv->sb_rptr += m->m_len;
-m->m_data[m->m_len] = 0; /* NULL terminate */
-if (strchr(m->m_data, '\r') || strchr(m->m_data, '\n')) {
-...
-}
-m_free(m);
-return 0;
+  memcpy(so_rcv->sb_wptr, m->m_data, m->m_len); // copy user data to sbuf
+  so_rcv->sb_wptr += m->m_len;
+  so_rcv->sb_rptr += m->m_len;
+  m->m_data[m->m_len] = 0; /* NULL terminate */
+  if (strchr(m->m_data, '\r') || strchr(m->m_data, '\n')) {
+    ...
+  }
+  m_free(m);
+  return 0;
 }
 ```
 
@@ -34,36 +43,36 @@ There are two important data structures in the slirp module, one is mbuf, the ot
 ```c
 // slirp/mbuf.h
 struct mbuf {
-/* XXX should union some of these! */
-/* header at beginning of each mbuf: */
-struct mbuf *m_next; /* Linked list of mbufs */
-struct mbuf *m_prev;
-struct mbuf *m_nextpkt; /* Next packet in queue/record */
-struct mbuf *m_prevpkt; /* Flags aren't used in the output queue */
-int m_flags; /* Misc flags */
-int m_size; /* Size of mbuf, from m_dat or m_ext */
-struct socket *m_so;
-caddr_t m_data; /* Current location of data */
-int m_len; /* Amount of data in this mbuf, from m_data */
-Slirp *slirp;
-bool resolution_requested;
-uint64_t expiration_date;
-char *m_ext;
-/* start of dynamic buffer area, must be last element */
-char m_dat[];
+  /* XXX should union some of these! */
+  /* header at beginning of each mbuf: */
+  struct mbuf *m_next; /* Linked list of mbufs */
+  struct mbuf *m_prev;
+  struct mbuf *m_nextpkt; /* Next packet in queue/record */
+  struct mbuf *m_prevpkt; /* Flags aren't used in the output queue */
+  int m_flags; /* Misc flags */
+  int m_size; /* Size of mbuf, from m_dat or m_ext */
+  struct socket *m_so;
+  caddr_t m_data; /* Current location of data */
+  int m_len; /* Amount of data in this mbuf, from m_data */
+  Slirp *slirp;
+  bool resolution_requested;
+  uint64_t expiration_date;
+  char *m_ext;
+  /* start of dynamic buffer area, must be last element */
+  char m_dat[];
 };
 ```
 
 ```c
 // slirp/sbuf.h
 struct sbuf {
-uint32_t sb_cc; /* actual chars in buffer */
-uint32_t sb_datalen; /* Length of data */
-char *sb_wptr; /* write pointer. points to where the next
-* bytes should be written in the sbuf */
-char *sb_rptr; /* read pointer. points to where the next
-* byte should be read from the sbuf */
-char *sb_data; /* Actual data */
+  uint32_t sb_cc; /* actual chars in buffer */
+  uint32_t sb_datalen; /* Length of data */
+  char *sb_wptr; /* write pointer. points to where the next
+                  * bytes should be written in the sbuf */
+  char *sb_rptr; /* read pointer. points to where the next
+                  * byte should be read from the sbuf */
+  char *sb_data; /* Actual data */
 };
 ```
 
@@ -75,11 +84,12 @@ It can be seen that when simulating the ident protocol, the program copies the u
 
 // slirp/tcp_input.c:tcp_input
      } else if (ti->ti_ack == tp->snd_una &&
-tcpfrag_list_empty(tp) &&
-ti->ti_len <= sbspace(&so->so_rcv)) { // here to verify whether there is enough space in sbuf
-...
-if (so->so_emu) {
-if (tcp_emu(so,m)) sbappend(so, m);
+       tcpfrag_list_empty(tp) &&
+       ti->ti_len <= sbspace(&so->so_rcv)) { // here to verify whether there is enough space in sbuf
+         ...
+        if (so->so_emu) {
+          if (tcp_emu(so,m)) sbappend(so, m);
+          ...
 ```
 
 Before calling tcp_emu, it will verify whether the remaining space in sbuf is sufficient, but because the data is copied but the corresponding length is not added to sb_cc when simulating the ident protocol, the space calculated by sbspace is not the actual remaining space of sbuf .
@@ -148,31 +158,31 @@ In IPv4, IP fragmentation exists to transmit data between two networks with diff
 ```c
 void ip_input(struct mbuf *m)
 {
-   ...
-/*
-* If offset or IP_MF are set, must reassemble.
-* Otherwise, nothing need be done.
-* (We could look in the reassembly queue to see
-* if the packet was previously fragmented,
-* but it's not worth the time; just let them time out.)
-*
-* XXX This should fail, don't fragment yet
-*/
-if (ip->ip_off &~ IP_DF) {
-...
-/*
-* If datagram marked as having more fragments
-* or if this is not the first fragment,
-* attempt reassembly; if it succeeds, proceed.
-*/
-if (ip->ip_tos & 1 || ip->ip_off) {
-ip = ip_reass(slirp, ip, fp);
-       if (ip == NULL)
-return; // return directly here
-m = dtom(slirp, ip);
-} else
-...
-}
+  ...
+  /*
+  * If offset or IP_MF are set, must reassemble.
+  * Otherwise, nothing need be done.
+  * (We could look in the reassembly queue to see
+  * if the packet was previously fragmented,
+  * but it's not worth the time; just let them time out.)
+  *
+  * XXX This should fail, don't fragment yet
+  */
+  if (ip->ip_off &~ IP_DF) {
+    ...
+    /*
+    * If datagram marked as having more fragments
+    * or if this is not the first fragment,
+    * attempt reassembly; if it succeeds, proceed.
+    */
+    if (ip->ip_tos & 1 || ip->ip_off) {
+      ip = ip_reass(slirp, ip, fp);
+             if (ip == NULL)
+      return; // return directly here
+      m = dtom(slirp, ip);
+    } else
+      ...
+  }
 ```
 
 When trying to reassemble an ip packet, if the reassembly function returns NULL, it means that the current fragmentation sequence is not over, so this packet will not be processed by the next process, but will be returned directly!
@@ -187,23 +197,26 @@ In IP fragmentation, when the MF bit of a packet is set to 1, qemu will assemble
 
 ```c
 // slirp/ip_input.c:ip_reass
-   while (q != (struct ipasfrag*)&fp->frag_link) {
-struct mbuf *t = dtom(slirp, q);
-q = (struct ipasfrag *) q->ipf_next;
-m_cat(m, t);
+  ...
+  while (q != (struct ipasfrag*)&fp->frag_link) {
+    struct mbuf *t = dtom(slirp, q);
+    q = (struct ipasfrag *) q->ipf_next;
+    m_cat(m, t);
+  }
+  ...
 }
 
-// slirp/mbuf.c:m_cat
+  // slirp/mbuf.c:m_cat
 void m_cat(struct mbuf *m, struct mbuf *n)
 {
-/*
-* If there's no room, realloc
-*/
-if (M_FREEROOM(m) < n->m_len)
-m_inc(m, m->m_len + n->m_len);
-memcpy(m->m_data+m->m_len, n->m_data, n->m_len);
-m->m_len += n->m_len;
-m_free(n);
+  /*
+  * If there's no room, realloc
+  */
+  if (M_FREEROOM(m) < n->m_len)
+    m_inc(m, m->m_len + n->m_len);
+  memcpy(m->m_data+m->m_len, n->m_data, n->m_len);
+  m->m_len += n->m_len;
+  m_free(n);
 }
 ```
 
