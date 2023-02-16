@@ -1,12 +1,5 @@
-## Sketch of plan (based on the code)
-1. Construct ICMP_ECHO request with command appended
-2. Spray 0x250 times (spraying -> send random packets, with MF bit set, of size 0x2000 + header lens tcp ports 60->80)
-3. Send payload of (0x300 + 4) * 'A' chars to HOST with MF bit set (more fragments) (id=0xdead, protocol=0xff)
-4. Send ((0x500 * 6) + 1072)* 'A' chars to HOST on vulnerable port 113
-5. Create payload of struct mbuf, with m_data pointing to address 0x??????????000b00
-6. Send above payload to HOST on vulnerable port 113
-7. Send packet containing ICMP_ECHO request with MF bit unset (LAST FRAGMENT) -> trigger reassembly
-8. TBD
+## Notice
+This write-up has been directly translated from the original write-up, using Google Translate.
 
 ## Vulnerability causes and details
 
